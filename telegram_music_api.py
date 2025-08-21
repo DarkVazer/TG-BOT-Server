@@ -17,7 +17,7 @@ import mimetypes
 
 # Telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # Web API
 from flask import Flask, request, jsonify, send_file, Response

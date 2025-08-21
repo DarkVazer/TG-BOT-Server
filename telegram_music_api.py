@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Telegram Music Bot + API Server - Исправленная версия
-Совместимость с Python 3.12+ и последними версиями библиотек
+Telegram Music Bot + API Server - Финальная рабочая версия
+Исправлены все проблемы с webhook и event loop
 """
 
 import os
@@ -13,6 +13,7 @@ from datetime import datetime
 import threading
 import uuid
 from pathlib import Path
+import queue
 import mimetypes
 
 # Telegram
@@ -37,6 +38,9 @@ MUSIC_DIR.mkdir(exist_ok=True)
 
 # Простое хранилище треков
 tracks_storage = {}
+
+# Очередь для обработки Telegram updates
+update_queue = queue.Queue()
 
 def save_tracks():
     """Сохранить треки на диск"""
@@ -76,7 +80,7 @@ def add_cors_headers(response):
 def home():
     """Главная страница с веб-плеером"""
     tracks_count = len(tracks_storage)
-    bot_status = 'Настроен' if BOT_TOKEN else 'Не настроен'
+    bot_status = 'Настроен ✅' if BOT_TOKEN else 'Не настроен ❌'
     
     return f"""
     <!DOCTYPE html>
@@ -92,9 +96,9 @@ def home():
                    min-height: 100vh; color: white; padding: 20px; }}
             .container {{ max-width: 1000px; margin: 0 auto; }}
             .header {{ text-align: center; margin-bottom: 30px; }}
-            .stats {{ display: flex; justify-content: center; gap: 20px; margin: 20px 0; }}
+            .stats {{ display: flex; justify-content: center; gap: 20px; margin: 20px 0; flex-wrap: wrap; }}
             .stat-card {{ background: rgba(255,255,255,0.1); padding: 20px; 
-                         border-radius: 10px; text-align: center; }}
+                         border-radius: 10px; text-align: center; min-width: 150px; }}
             .endpoints {{ background: rgba(255,255,255,0.1); padding: 30px; 
                         border-radius: 15px; margin: 20px 0; }}
             .endpoint {{ background: rgba(255,255,255,0.1); padding: 15px; 
@@ -106,6 +110,10 @@ def home():
             .track-item {{ background: rgba(255,255,255,0.1); padding: 15px; 
                           margin: 10px 0; border-radius: 8px; }}
             audio {{ width: 100%; margin-top: 10px; }}
+            .refresh-btn {{ background: #1DB954; color: white; border: none; 
+                           padding: 10px 20px; border-radius: 5px; cursor: pointer; 
+                           margin-bottom: 20px; }}
+            .no-tracks {{ text-align: center; padding: 40px; color: #ccc; }}
         </style>
     </head>
     <body>
@@ -125,7 +133,7 @@ def home():
                     <p>Telegram бот</p>
                 </div>
                 <div class="stat-card">
-                    <h3>Онлайн</h3>
+                    <h3>🟢 Онлайн</h3>
                     <p>Статус сервера</p>
                 </div>
             </div>
@@ -156,39 +164,62 @@ def home():
             
             <div class="player-section">
                 <h2>🎧 Веб-плеер</h2>
+                <button class="refresh-btn" onclick="loadTracks()">🔄 Обновить</button>
                 <div id="tracks-list">Загрузка...</div>
             </div>
         </div>
         
         <script>
-            // Загрузка и отображение треков
-            fetch('/api/tracks')
-                .then(response => response.json())
-                .then(data => {{
-                    const container = document.getElementById('tracks-list');
-                    if (data.tracks && data.tracks.length > 0) {{
-                        let html = '<h3>Доступные треки:</h3>';
-                        data.tracks.forEach(track => {{
-                            html += `
-                                <div class="track-item">
-                                    <strong>${{track.title}}</strong> - ${{track.artist}}<br>
-                                    <small>ID: ${{track.id}} | Прослушиваний: ${{track.play_count || 0}}</small>
-                                    <audio controls>
-                                        <source src="/api/play/${{track.id}}" type="audio/mpeg">
-                                        Ваш браузер не поддерживает аудио элемент.
-                                    </audio>
+            function loadTracks() {{
+                const container = document.getElementById('tracks-list');
+                container.innerHTML = 'Загрузка...';
+                
+                fetch('/api/tracks')
+                    .then(response => response.json())
+                    .then(data => {{
+                        if (data.tracks && data.tracks.length > 0) {{
+                            let html = `<h3>Доступные треки (${{data.tracks.length}}):</h3>`;
+                            data.tracks.forEach(track => {{
+                                html += `
+                                    <div class="track-item">
+                                        <strong>${{track.title}}</strong> - ${{track.artist}}<br>
+                                        <small>ID: ${{track.id}} | Прослушиваний: ${{track.play_count || 0}}</small>
+                                        <audio controls preload="none">
+                                            <source src="/api/play/${{track.id}}" type="audio/mpeg">
+                                            Ваш браузер не поддерживает аудио элемент.
+                                        </audio>
+                                        <div style="margin-top: 10px;">
+                                            <a href="/api/download/${{track.id}}" download style="color: #1DB954; text-decoration: none;">
+                                                💾 Скачать
+                                            </a>
+                                        </div>
+                                    </div>
+                                `;
+                            }});
+                            container.innerHTML = html;
+                        }} else {{
+                            container.innerHTML = `
+                                <div class="no-tracks">
+                                    <h3>📭 Нет треков</h3>
+                                    <p>Отправьте аудиофайлы Telegram боту для добавления!</p>
+                                    <p style="margin-top: 10px; font-size: 14px;">
+                                        Бот: {bot_status}
+                                    </p>
                                 </div>
                             `;
-                        }});
-                        container.innerHTML = html;
-                    }} else {{
-                        container.innerHTML = '<p>Нет треков. Загрузите через Telegram бота!</p>';
-                    }}
-                }})
-                .catch(error => {{
-                    console.error('Error:', error);
-                    document.getElementById('tracks-list').innerHTML = '<p>Ошибка загрузки треков</p>';
-                }});
+                        }}
+                    }})
+                    .catch(error => {{
+                        console.error('Error:', error);
+                        container.innerHTML = '<p style="color: #ff6b6b;">Ошибка загрузки треков</p>';
+                    }});
+            }}
+            
+            // Загружаем треки при открытии страницы
+            loadTracks();
+            
+            // Автообновление каждые 30 секунд
+            setInterval(loadTracks, 30000);
         </script>
     </body>
     </html>
@@ -217,6 +248,9 @@ def get_tracks():
             'play_count': track.get('play_count', 0)
         }
         safe_tracks.append(safe_track)
+    
+    # Сортируем по дате загрузки (новые сначала)
+    safe_tracks.sort(key=lambda x: x['uploaded_at'], reverse=True)
     
     return jsonify({
         'tracks': safe_tracks,
@@ -316,8 +350,8 @@ def get_stats():
         'bot_configured': bool(BOT_TOKEN)
     })
 
-# Webhook endpoint для Telegram
-@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+# Webhook endpoint для Telegram (упрощенный)
+@app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     """Обработка webhook от Telegram"""
     if not BOT_TOKEN:
@@ -325,9 +359,9 @@ def telegram_webhook():
     
     try:
         update_data = request.get_json()
-        if telegram_app:
-            update = Update.de_json(update_data, telegram_app.bot)
-            asyncio.create_task(telegram_app.process_update(update))
+        if update_data:
+            # Добавляем update в очередь для обработки
+            update_queue.put(update_data)
         return 'OK'
     except Exception as e:
         logger.error(f"Webhook error: {e}")
@@ -344,19 +378,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 Привет, {user.first_name}! 
 
 *Возможности:*
-• 📤 Загрузка аудиофайлов
+• 📤 Загрузка аудиофайлов (до 50MB)
 • 🎵 Автоматическое добавление в API
 • 🔗 Веб-плеер и REST API
 • 📊 Статистика прослушиваний
 
 *Команды:*
 /start - Главное меню
-/upload - Загрузить аудио
 /stats - Статистика
 /list - Список треков
 /api - API информация
 
-Просто отправьте аудиофайл! 🎶
+*Инструкция:*
+Просто отправьте мне аудиофайл! 🎶
     """
     
     keyboard = [
@@ -366,7 +400,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ],
         [
             InlineKeyboardButton("🔗 API", callback_data="api"),
-            InlineKeyboardButton("ℹ️ Помощь", callback_data="help")
+            InlineKeyboardButton("🌐 Веб-плеер", url=WEBHOOK_URL or "https://telegram-music-bot-api-server.onrender.com")
         ]
     ]
     
@@ -403,6 +437,10 @@ async def handle_audio_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         artist = audio.performer or "Unknown Artist"
         duration = audio.duration or 0
         
+        # Очищаем название от недопустимых символов
+        title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+        artist = "".join(c for c in artist if c.isalnum() or c in (' ', '-', '_')).strip()
+        
         # Генерируем уникальный ID и безопасное имя файла
         track_id = str(uuid.uuid4())[:8]
         file_hash = hashlib.md5(audio.file_id.encode()).hexdigest()[:8]
@@ -428,7 +466,7 @@ async def handle_audio_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         save_tracks()
         
         # Формируем ответ
-        base_url = WEBHOOK_URL or "http://localhost:10000"
+        base_url = WEBHOOK_URL or "https://telegram-music-bot-api-server.onrender.com"
         
         success_text = f"""
 ✅ *Трек успешно загружен!*
@@ -447,11 +485,10 @@ async def handle_audio_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         keyboard = [
             [
-                InlineKeyboardButton("▶️ Слушать", url=f"{base_url}/api/play/{track_id}"),
-                InlineKeyboardButton("💾 Скачать", url=f"{base_url}/api/download/{track_id}")
+                InlineKeyboardButton("🌐 Открыть веб-плеер", url=base_url)
             ],
             [
-                InlineKeyboardButton("🌐 Веб-плеер", url=base_url)
+                InlineKeyboardButton("📊 Статистика", callback_data="stats")
             ]
         ]
         
@@ -473,14 +510,23 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Статистика"""
     total_tracks = len(tracks_storage)
     total_plays = sum(track.get('play_count', 0) for track in tracks_storage.values())
+    user_tracks = len([t for t in tracks_storage.values() if t.get('user_id') == update.effective_user.id])
     
     stats_text = f"""
 📊 *Статистика сервера*
 
 🎵 Всего треков: {total_tracks}
 ▶️ Общее прослушиваний: {total_plays}
-👤 Ваших треков: {len([t for t in tracks_storage.values() if t.get('user_id') == update.effective_user.id])}
-    """
+👤 Ваших треков: {user_tracks}
+
+*Топ-3 треков:*
+"""
+    
+    # Топ треков по прослушиваниям
+    sorted_tracks = sorted(tracks_storage.values(), key=lambda x: x.get('play_count', 0), reverse=True)[:3]
+    
+    for i, track in enumerate(sorted_tracks, 1):
+        stats_text += f"{i}. {track['title']} ({track.get('play_count', 0)} ▶️)\n"
     
     await update.message.reply_text(stats_text, parse_mode='Markdown')
 
@@ -490,9 +536,9 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("📋 Библиотека пуста. Загрузите первый трек!")
         return
     
-    # Показываем последние 10 треков
+    # Показываем последние 5 треков
     tracks_list = list(tracks_storage.values())
-    recent_tracks = sorted(tracks_list, key=lambda x: x.get('uploaded_at', ''), reverse=True)[:10]
+    recent_tracks = sorted(tracks_list, key=lambda x: x.get('uploaded_at', ''), reverse=True)[:5]
     
     list_text = f"📋 *Последние треки* ({len(tracks_storage)} всего):\n\n"
     
@@ -500,14 +546,14 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         list_text += f"{i}. *{track['title']}* - {track['artist']}\n"
         list_text += f"   🆔 `{track['id']}` | ▶️ {track.get('play_count', 0)}\n\n"
     
-    if len(tracks_storage) > 10:
-        list_text += f"... и еще {len(tracks_storage) - 10} треков"
+    if len(tracks_storage) > 5:
+        list_text += f"... и еще {len(tracks_storage) - 5} треков"
     
     await update.message.reply_text(list_text, parse_mode='Markdown')
 
 async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """API информация"""
-    base_url = WEBHOOK_URL or "http://localhost:10000"
+    base_url = WEBHOOK_URL or "https://telegram-music-bot-api-server.onrender.com"
     
     api_text = f"""
 🔗 *API Документация*
@@ -520,12 +566,6 @@ async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 • `GET /api/play/ID` - Воспроизведение
 • `GET /api/download/ID` - Скачивание
 • `GET /api/stats` - Статистика
-
-*Примеры использования:*
-```
-curl "{base_url}/api/tracks"
-curl "{base_url}/api/search?q=music"
-```
 
 *Веб-интерфейс:* {base_url}
     """
@@ -549,22 +589,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(text)
         
     elif query.data == "api":
-        base_url = WEBHOOK_URL or "http://localhost:10000"
+        base_url = WEBHOOK_URL or "https://telegram-music-bot-api-server.onrender.com"
         text = f"🔗 API доступен по адресу:\n{base_url}\n\nИспользуйте /api для подробной информации"
         await query.edit_message_text(text)
-        
-    elif query.data == "help":
-        text = """
-ℹ️ *Помощь*
-
-1. Отправьте аудиофайл боту
-2. Файл будет обработан и добавлен в API
-3. Используйте веб-плеер или API для воспроизведения
-
-Поддерживаемые форматы: MP3, M4A, FLAC
-Максимальный размер: 50MB
-        """
-        await query.edit_message_text(text, parse_mode='Markdown')
 
 def run_flask_server():
     """Запуск Flask сервера в отдельном потоке"""
@@ -572,6 +599,20 @@ def run_flask_server():
         app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
     except Exception as e:
         logger.error(f"Flask server error: {e}")
+
+async def process_telegram_updates():
+    """Обработка Telegram updates из очереди"""
+    while True:
+        try:
+            if not update_queue.empty():
+                update_data = update_queue.get_nowait()
+                if telegram_app:
+                    update = Update.de_json(update_data, telegram_app.bot)
+                    await telegram_app.process_update(update)
+            await asyncio.sleep(0.1)  # Небольшая пауза
+        except Exception as e:
+            logger.error(f"Update processing error: {e}")
+            await asyncio.sleep(1)
 
 async def setup_telegram_bot():
     """Настройка и создание Telegram бота"""
@@ -585,7 +626,6 @@ async def setup_telegram_bot():
         
         # Добавляем обработчики команд
         application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("upload", start_command))
         application.add_handler(CommandHandler("stats", stats_command))
         application.add_handler(CommandHandler("list", list_command))
         application.add_handler(CommandHandler("api", api_command))
@@ -618,9 +658,12 @@ async def main():
     
     if telegram_app and WEBHOOK_URL:
         # Webhook режим для продакшена
-        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        webhook_url = f"{WEBHOOK_URL}/webhook"
         await telegram_app.bot.set_webhook(url=webhook_url)
         logger.info(f"🤖 Telegram bot webhook set to: {webhook_url}")
+        
+        # Запускаем обработчик updates
+        update_processor = asyncio.create_task(process_telegram_updates())
         
         # Держим приложение запущенным
         try:
@@ -628,6 +671,7 @@ async def main():
                 await asyncio.sleep(60)  # Проверяем каждую минуту
         except KeyboardInterrupt:
             logger.info("Shutting down...")
+            update_processor.cancel()
             
     elif telegram_app:
         # Polling режим для разработки

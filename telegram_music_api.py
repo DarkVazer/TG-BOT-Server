@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Простой Telegram Music Bot + API Server
-Минимальная версия для быстрого развертывания на Render
+Telegram Music Bot + API Server - Исправленная версия
+Совместимость с Python 3.12+ и последними версиями библиотек
 """
 
 import os
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
 PORT = int(os.getenv('PORT', 10000))
 
@@ -35,292 +35,391 @@ PORT = int(os.getenv('PORT', 10000))
 MUSIC_DIR = Path("music")
 MUSIC_DIR.mkdir(exist_ok=True)
 
-# Хранилище треков (простое в памяти)
-tracks_db = {}
+# Простое хранилище треков
+tracks_storage = {}
 
 def save_tracks():
     """Сохранить треки на диск"""
     try:
         with open(MUSIC_DIR / "tracks.json", 'w', encoding='utf-8') as f:
-            json.dump(tracks_db, f, ensure_ascii=False, indent=2)
+            json.dump(tracks_storage, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Error saving tracks: {e}")
+        logger.error(f"Save error: {e}")
 
 def load_tracks():
     """Загрузить треки с диска"""
-    global tracks_db
+    global tracks_storage
     try:
-        if os.path.exists(MUSIC_DIR / "tracks.json"):
-            with open(MUSIC_DIR / "tracks.json", 'r', encoding='utf-8') as f:
-                tracks_db = json.load(f)
-                logger.info(f"Loaded {len(tracks_db)} tracks")
+        tracks_file = MUSIC_DIR / "tracks.json"
+        if tracks_file.exists():
+            with open(tracks_file, 'r', encoding='utf-8') as f:
+                tracks_storage = json.load(f)
+                logger.info(f"Loaded {len(tracks_storage)} tracks")
     except Exception as e:
-        logger.error(f"Error loading tracks: {e}")
+        logger.error(f"Load error: {e}")
 
-# Загружаем существующие треки
+# Загружаем треки при старте
 load_tracks()
 
 # Flask приложение
 app = Flask(__name__)
 
 @app.after_request
-def after_request(response):
-    """Простая CORS поддержка"""
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+def add_cors_headers(response):
+    """Добавляем CORS заголовки"""
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
     return response
 
 @app.route('/')
-def index():
-    """Главная страница"""
+def home():
+    """Главная страница с веб-плеером"""
+    tracks_count = len(tracks_storage)
+    bot_status = 'Настроен' if BOT_TOKEN else 'Не настроен'
+    
     return f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="ru">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>🎵 Music Bot API</title>
-        <meta charset="utf-8">
         <style>
-            body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
-            .container {{ max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }}
-            .stat {{ display: inline-block; margin: 10px; padding: 10px 20px; background: #e3f2fd; border-radius: 5px; }}
-            .endpoint {{ background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #007bff; }}
-            code {{ background: #f1f3f4; padding: 4px 8px; border-radius: 4px; font-family: monospace; }}
-            h2 {{ color: #333; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                   min-height: 100vh; color: white; padding: 20px; }}
+            .container {{ max-width: 1000px; margin: 0 auto; }}
+            .header {{ text-align: center; margin-bottom: 30px; }}
+            .stats {{ display: flex; justify-content: center; gap: 20px; margin: 20px 0; }}
+            .stat-card {{ background: rgba(255,255,255,0.1); padding: 20px; 
+                         border-radius: 10px; text-align: center; }}
+            .endpoints {{ background: rgba(255,255,255,0.1); padding: 30px; 
+                        border-radius: 15px; margin: 20px 0; }}
+            .endpoint {{ background: rgba(255,255,255,0.1); padding: 15px; 
+                       margin: 10px 0; border-radius: 8px; }}
+            .player-section {{ background: rgba(255,255,255,0.1); padding: 30px; 
+                              border-radius: 15px; margin: 20px 0; }}
+            code {{ background: rgba(0,0,0,0.3); padding: 4px 8px; 
+                   border-radius: 4px; font-family: monospace; }}
+            .track-item {{ background: rgba(255,255,255,0.1); padding: 15px; 
+                          margin: 10px 0; border-radius: 8px; }}
+            audio {{ width: 100%; margin-top: 10px; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🎵 Music Bot API Server</h1>
-            
-            <h2>📊 Статистика</h2>
-            <div class="stat">Треков: {len(tracks_db)}</div>
-            <div class="stat">Статус: Работает</div>
-            <div class="stat">Режим: {'Webhook' if WEBHOOK_URL else 'Polling'}</div>
-            
-            <h2>🔗 API Endpoints</h2>
-            
-            <div class="endpoint">
-                <strong>GET /api/tracks</strong> - Список всех треков<br>
-                <code>curl {request.host_url}api/tracks</code>
+            <div class="header">
+                <h1>🎵 Music Bot API Server</h1>
+                <p>Загружайте музыку через Telegram, воспроизводите через API</p>
             </div>
             
-            <div class="endpoint">
-                <strong>GET /api/search?q=запрос</strong> - Поиск треков<br>
-                <code>curl "{request.host_url}api/search?q=music"</code>
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>{tracks_count}</h3>
+                    <p>Треков в библиотеке</p>
+                </div>
+                <div class="stat-card">
+                    <h3>{bot_status}</h3>
+                    <p>Telegram бот</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Онлайн</h3>
+                    <p>Статус сервера</p>
+                </div>
             </div>
             
-            <div class="endpoint">
-                <strong>GET /api/play/&lt;id&gt;</strong> - Воспроизведение<br>
-                <code>curl {request.host_url}api/play/12345</code>
+            <div class="endpoints">
+                <h2>🔗 API Endpoints</h2>
+                
+                <div class="endpoint">
+                    <strong>GET /api/tracks</strong> - Все треки<br>
+                    <code>curl {request.host_url}api/tracks</code>
+                </div>
+                
+                <div class="endpoint">
+                    <strong>GET /api/search?q=запрос</strong> - Поиск<br>
+                    <code>curl "{request.host_url}api/search?q=music"</code>
+                </div>
+                
+                <div class="endpoint">
+                    <strong>GET /api/play/&lt;id&gt;</strong> - Воспроизведение<br>
+                    <code>curl {request.host_url}api/play/12345</code>
+                </div>
+                
+                <div class="endpoint">
+                    <strong>GET /api/download/&lt;id&gt;</strong> - Скачивание<br>
+                    <code>curl -O {request.host_url}api/download/12345</code>
+                </div>
             </div>
             
-            <div class="endpoint">
-                <strong>GET /api/download/&lt;id&gt;</strong> - Скачивание<br>
-                <code>curl -O {request.host_url}api/download/12345</code>
+            <div class="player-section">
+                <h2>🎧 Веб-плеер</h2>
+                <div id="tracks-list">Загрузка...</div>
             </div>
-            
-            <h2>🤖 Telegram Bot</h2>
-            <p>📤 Отправьте аудиофайлы боту для добавления в библиотеку</p>
-            <p>🎵 Файлы автоматически станут доступны через API</p>
-            
-            <h2>🎧 Плеер</h2>
-            <div id="player"></div>
-            
-            <script>
-                // Простой веб-плеер
-                fetch('/api/tracks')
-                    .then(r => r.json())
-                    .then(data => {{
-                        const player = document.getElementById('player');
-                        if (data.tracks && data.tracks.length > 0) {{
-                            let html = '<h3>Последние треки:</h3>';
-                            data.tracks.slice(0, 5).forEach(track => {{
-                                html += `
-                                    <div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 5px;">
-                                        <strong>${{track.title}}</strong> - ${{track.artist}}<br>
-                                        <audio controls style="width: 100%; margin-top: 5px;">
-                                            <source src="/api/play/${{track.id}}" type="audio/mpeg">
-                                        </audio>
-                                    </div>
-                                `;
-                            }});
-                            player.innerHTML = html;
-                        }} else {{
-                            player.innerHTML = '<p>Нет треков. Загрузите через Telegram бота!</p>';
-                        }}
-                    }});
-            </script>
         </div>
+        
+        <script>
+            // Загрузка и отображение треков
+            fetch('/api/tracks')
+                .then(response => response.json())
+                .then(data => {{
+                    const container = document.getElementById('tracks-list');
+                    if (data.tracks && data.tracks.length > 0) {{
+                        let html = '<h3>Доступные треки:</h3>';
+                        data.tracks.forEach(track => {{
+                            html += `
+                                <div class="track-item">
+                                    <strong>${{track.title}}</strong> - ${{track.artist}}<br>
+                                    <small>ID: ${{track.id}} | Прослушиваний: ${{track.play_count || 0}}</small>
+                                    <audio controls>
+                                        <source src="/api/play/${{track.id}}" type="audio/mpeg">
+                                        Ваш браузер не поддерживает аудио элемент.
+                                    </audio>
+                                </div>
+                            `;
+                        }});
+                        container.innerHTML = html;
+                    }} else {{
+                        container.innerHTML = '<p>Нет треков. Загрузите через Telegram бота!</p>';
+                    }}
+                }})
+                .catch(error => {{
+                    console.error('Error:', error);
+                    document.getElementById('tracks-list').innerHTML = '<p>Ошибка загрузки треков</p>';
+                }});
+        </script>
     </body>
     </html>
     """
 
 @app.route('/health')
-def health():
-    return jsonify({'status': 'ok', 'tracks': len(tracks_db)})
+def health_check():
+    """Health check для мониторинга"""
+    return jsonify({
+        'status': 'healthy',
+        'tracks_count': len(tracks_storage),
+        'bot_configured': bool(BOT_TOKEN)
+    })
 
 @app.route('/api/tracks')
-def api_tracks():
-    """Все треки"""
+def get_tracks():
+    """Получить все треки"""
     safe_tracks = []
-    for track in tracks_db.values():
-        safe_track = track.copy()
-        safe_track.pop('file_path', None)
-        safe_track.pop('file_id', None)
+    for track in tracks_storage.values():
+        safe_track = {
+            'id': track['id'],
+            'title': track['title'],
+            'artist': track['artist'],
+            'duration': track.get('duration', 0),
+            'uploaded_at': track.get('uploaded_at', ''),
+            'play_count': track.get('play_count', 0)
+        }
         safe_tracks.append(safe_track)
     
-    return jsonify({'tracks': safe_tracks, 'count': len(safe_tracks)})
+    return jsonify({
+        'tracks': safe_tracks,
+        'count': len(safe_tracks)
+    })
 
 @app.route('/api/search')
-def api_search():
+def search_tracks():
     """Поиск треков"""
     query = request.args.get('q', '').strip().lower()
+    
     if not query:
-        return jsonify({'error': 'Parameter q required'}), 400
+        return jsonify({'error': 'Query parameter "q" is required'}), 400
     
     results = []
-    for track in tracks_db.values():
-        if query in track['title'].lower() or query in track['artist'].lower():
-            safe_track = track.copy()
-            safe_track.pop('file_path', None)
-            safe_track.pop('file_id', None)
+    for track in tracks_storage.values():
+        if (query in track['title'].lower() or 
+            query in track['artist'].lower()):
+            
+            safe_track = {
+                'id': track['id'],
+                'title': track['title'],
+                'artist': track['artist'],
+                'duration': track.get('duration', 0),
+                'play_count': track.get('play_count', 0)
+            }
             results.append(safe_track)
     
-    return jsonify({'query': query, 'tracks': results, 'count': len(results)})
+    return jsonify({
+        'query': query,
+        'tracks': results,
+        'count': len(results)
+    })
 
 @app.route('/api/play/<track_id>')
-def api_play(track_id):
+def play_track(track_id):
     """Воспроизведение трека"""
-    if track_id not in tracks_db:
+    if track_id not in tracks_storage:
         return jsonify({'error': 'Track not found'}), 404
     
-    track = tracks_db[track_id]
+    track = tracks_storage[track_id]
     file_path = track['file_path']
     
     if not os.path.exists(file_path):
-        return jsonify({'error': 'File not found'}), 404
+        return jsonify({'error': 'Audio file not found'}), 404
     
-    # Увеличиваем счетчик
-    tracks_db[track_id]['play_count'] = tracks_db[track_id].get('play_count', 0) + 1
+    # Увеличиваем счетчик прослушиваний
+    tracks_storage[track_id]['play_count'] = tracks_storage[track_id].get('play_count', 0) + 1
     save_tracks()
     
-    mime_type = 'audio/mpeg'
-    
-    def generate():
-        with open(file_path, 'rb') as f:
+    def generate_audio():
+        with open(file_path, 'rb') as audio_file:
             while True:
-                chunk = f.read(8192)
+                chunk = audio_file.read(8192)  # 8KB chunks
                 if not chunk:
                     break
                 yield chunk
     
     return Response(
-        generate(),
-        mimetype=mime_type,
-        headers={'Content-Disposition': f'inline; filename="{track["title"]}.mp3"'}
+        generate_audio(),
+        mimetype='audio/mpeg',
+        headers={
+            'Content-Disposition': f'inline; filename="{track["title"]}.mp3"',
+            'Accept-Ranges': 'bytes'
+        }
     )
 
 @app.route('/api/download/<track_id>')
-def api_download(track_id):
+def download_track(track_id):
     """Скачивание трека"""
-    if track_id not in tracks_db:
+    if track_id not in tracks_storage:
         return jsonify({'error': 'Track not found'}), 404
     
-    track = tracks_db[track_id]
+    track = tracks_storage[track_id]
     file_path = track['file_path']
     
     if not os.path.exists(file_path):
-        return jsonify({'error': 'File not found'}), 404
+        return jsonify({'error': 'Audio file not found'}), 404
     
     filename = f"{track['artist']} - {track['title']}.mp3"
-    return send_file(file_path, as_attachment=True, download_name=filename)
+    
+    return send_file(
+        file_path,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='audio/mpeg'
+    )
 
-# Webhook для Telegram
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
-def webhook():
-    if BOT_TOKEN == 'YOUR_BOT_TOKEN':
+@app.route('/api/stats')
+def get_stats():
+    """Статистика сервера"""
+    total_plays = sum(track.get('play_count', 0) for track in tracks_storage.values())
+    
+    return jsonify({
+        'total_tracks': len(tracks_storage),
+        'total_plays': total_plays,
+        'bot_configured': bool(BOT_TOKEN)
+    })
+
+# Webhook endpoint для Telegram
+@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+def telegram_webhook():
+    """Обработка webhook от Telegram"""
+    if not BOT_TOKEN:
         return 'Bot not configured', 400
     
     try:
         update_data = request.get_json()
-        update = Update.de_json(update_data, telegram_app.bot)
-        asyncio.create_task(telegram_app.process_update(update))
+        if telegram_app:
+            update = Update.de_json(update_data, telegram_app.bot)
+            asyncio.create_task(telegram_app.process_update(update))
         return 'OK'
     except Exception as e:
         logger.error(f"Webhook error: {e}")
         return 'Error', 500
 
-# Telegram бот
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Telegram бот функции
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /start"""
     user = update.effective_user
     
-    text = f"""
-🎵 *Музыкальный бот*
+    welcome_text = f"""
+🎵 *Музыкальный бот + API*
 
 Привет, {user.first_name}! 
 
-*Как пользоваться:*
-1. Отправьте аудиофайл боту
-2. Файл автоматически добавится в библиотеку
-3. Используйте API для воспроизведения
+*Возможности:*
+• 📤 Загрузка аудиофайлов
+• 🎵 Автоматическое добавление в API
+• 🔗 Веб-плеер и REST API
+• 📊 Статистика прослушиваний
 
 *Команды:*
-/start - Запуск
-/stats - Статистика  
+/start - Главное меню
+/upload - Загрузить аудио
+/stats - Статистика
 /list - Список треков
 /api - API информация
 
-📤 Просто отправьте аудиофайл!
+Просто отправьте аудиофайл! 🎶
     """
     
     keyboard = [
-        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton("📋 Список", callback_data="list")],
-        [InlineKeyboardButton("🔗 API", callback_data="api")]
+        [
+            InlineKeyboardButton("📊 Статистика", callback_data="stats"),
+            InlineKeyboardButton("📋 Список", callback_data="list")
+        ],
+        [
+            InlineKeyboardButton("🔗 API", callback_data="api"),
+            InlineKeyboardButton("ℹ️ Помощь", callback_data="help")
+        ]
     ]
     
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        text, 
+        welcome_text, 
         parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=reply_markup
     )
 
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка аудиофайлов"""
+async def handle_audio_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка загрузки аудиофайлов"""
     audio = update.message.audio
     user = update.effective_user
     
     if not audio:
-        await update.message.reply_text("❌ Это не аудиофайл")
+        await update.message.reply_text("❌ Отправьте аудиофайл")
         return
     
-    if audio.file_size > 50 * 1024 * 1024:
-        await update.message.reply_text("❌ Файл слишком большой (макс 50MB)")
+    # Проверка размера файла
+    if audio.file_size and audio.file_size > 50 * 1024 * 1024:  # 50MB
+        await update.message.reply_text("❌ Файл слишком большой (максимум 50MB)")
         return
     
-    await update.message.reply_text("⏳ Загружаю...")
+    status_msg = await update.message.reply_text("⏳ Загружаю файл...")
     
     try:
+        # Получаем файл от Telegram
         file = await context.bot.get_file(audio.file_id)
         
-        title = audio.title or audio.file_name or "Unknown"
+        # Извлекаем метаданные
+        title = audio.title or audio.file_name or "Unknown Title"
         artist = audio.performer or "Unknown Artist"
+        duration = audio.duration or 0
         
+        # Генерируем уникальный ID и безопасное имя файла
         track_id = str(uuid.uuid4())[:8]
-        safe_filename = f"{track_id}.mp3"
+        file_hash = hashlib.md5(audio.file_id.encode()).hexdigest()[:8]
+        safe_filename = f"{track_id}_{file_hash}.mp3"
         file_path = MUSIC_DIR / safe_filename
         
+        # Скачиваем файл
         await file.download_to_drive(file_path)
         
-        tracks_db[track_id] = {
+        # Сохраняем в базе данных
+        tracks_storage[track_id] = {
             'id': track_id,
             'title': title,
             'artist': artist,
             'file_path': str(file_path),
             'file_id': audio.file_id,
-            'duration': audio.duration or 0,
+            'duration': duration,
             'user_id': user.id,
             'uploaded_at': datetime.now().isoformat(),
             'play_count': 0
@@ -328,142 +427,226 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         save_tracks()
         
+        # Формируем ответ
         base_url = WEBHOOK_URL or "http://localhost:10000"
         
         success_text = f"""
-✅ *Трек загружен!*
+✅ *Трек успешно загружен!*
 
-🎵 {title}
+🎵 *{title}*
 👤 {artist}
+⏱️ {duration//60}:{duration%60:02d}
 🆔 `{track_id}`
 
-*Ссылки:*
+*API ссылки:*
 ▶️ Воспроизведение: `{base_url}/api/play/{track_id}`
 💾 Скачивание: `{base_url}/api/download/{track_id}`
+
+*Веб-плеер:* {base_url}
         """
         
-        await update.message.reply_text(success_text, parse_mode='Markdown')
-        logger.info(f"Track uploaded: {title} by {artist}")
+        keyboard = [
+            [
+                InlineKeyboardButton("▶️ Слушать", url=f"{base_url}/api/play/{track_id}"),
+                InlineKeyboardButton("💾 Скачать", url=f"{base_url}/api/download/{track_id}")
+            ],
+            [
+                InlineKeyboardButton("🌐 Веб-плеер", url=base_url)
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await status_msg.edit_text(
+            success_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        logger.info(f"Track uploaded: {title} by {artist} (ID: {track_id}, User: {user.id})")
         
     except Exception as e:
-        logger.error(f"Upload error: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        logger.error(f"Audio upload error: {e}")
+        await status_msg.edit_text(f"❌ Ошибка при загрузке: {str(e)}")
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Статистика"""
-    count = len(tracks_db)
-    total_plays = sum(track.get('play_count', 0) for track in tracks_db.values())
+    total_tracks = len(tracks_storage)
+    total_plays = sum(track.get('play_count', 0) for track in tracks_storage.values())
     
-    text = f"""
-📊 *Статистика*
+    stats_text = f"""
+📊 *Статистика сервера*
 
-🎵 Треков: {count}
-▶️ Прослушиваний: {total_plays}
+🎵 Всего треков: {total_tracks}
+▶️ Общее прослушиваний: {total_plays}
+👤 Ваших треков: {len([t for t in tracks_storage.values() if t.get('user_id') == update.effective_user.id])}
     """
     
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(stats_text, parse_mode='Markdown')
 
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Список треков"""
-    if not tracks_db:
-        await update.message.reply_text("📋 Библиотека пуста")
+    if not tracks_storage:
+        await update.message.reply_text("📋 Библиотека пуста. Загрузите первый трек!")
         return
     
-    tracks = list(tracks_db.values())
-    recent = sorted(tracks, key=lambda x: x['uploaded_at'], reverse=True)[:5]
+    # Показываем последние 10 треков
+    tracks_list = list(tracks_storage.values())
+    recent_tracks = sorted(tracks_list, key=lambda x: x.get('uploaded_at', ''), reverse=True)[:10]
     
-    text = f"📋 *Последние треки* ({len(tracks)} всего):\n\n"
+    list_text = f"📋 *Последние треки* ({len(tracks_storage)} всего):\n\n"
     
-    for i, track in enumerate(recent, 1):
-        text += f"{i}. {track['title']} - {track['artist']}\n"
-        text += f"   ID: `{track['id']}`\n\n"
+    for i, track in enumerate(recent_tracks, 1):
+        list_text += f"{i}. *{track['title']}* - {track['artist']}\n"
+        list_text += f"   🆔 `{track['id']}` | ▶️ {track.get('play_count', 0)}\n\n"
     
-    await update.message.reply_text(text, parse_mode='Markdown')
+    if len(tracks_storage) > 10:
+        list_text += f"... и еще {len(tracks_storage) - 10} треков"
+    
+    await update.message.reply_text(list_text, parse_mode='Markdown')
 
-async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """API информация"""
     base_url = WEBHOOK_URL or "http://localhost:10000"
     
-    text = f"""
-🔗 *API Endpoints*
+    api_text = f"""
+🔗 *API Документация*
 
 *Базовый URL:* `{base_url}`
 
-• `/api/tracks` - Все треки
-• `/api/search?q=запрос` - Поиск  
-• `/api/play/ID` - Воспроизведение
-• `/api/download/ID` - Скачивание
+*Endpoints:*
+• `GET /api/tracks` - Все треки
+• `GET /api/search?q=запрос` - Поиск
+• `GET /api/play/ID` - Воспроизведение
+• `GET /api/download/ID` - Скачивание
+• `GET /api/stats` - Статистика
+
+*Примеры использования:*
+```
+curl "{base_url}/api/tracks"
+curl "{base_url}/api/search?q=music"
+```
 
 *Веб-интерфейс:* {base_url}
     """
     
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(api_text, parse_mode='Markdown')
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопок"""
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка нажатий кнопок"""
     query = update.callback_query
     await query.answer()
     
     if query.data == "stats":
-        count = len(tracks_db)
-        text = f"📊 Треков: {count}"
+        total = len(tracks_storage)
+        plays = sum(track.get('play_count', 0) for track in tracks_storage.values())
+        text = f"📊 Треков: {total} | Прослушиваний: {plays}"
         await query.edit_message_text(text)
+        
     elif query.data == "list":
-        count = len(tracks_db)
-        text = f"📋 Библиотека: {count} треков"
+        count = len(tracks_storage)
+        text = f"📋 В библиотеке {count} треков\n\nИспользуйте /list для подробного списка"
         await query.edit_message_text(text)
+        
     elif query.data == "api":
         base_url = WEBHOOK_URL or "http://localhost:10000"
-        text = f"🔗 API: {base_url}"
+        text = f"🔗 API доступен по адресу:\n{base_url}\n\nИспользуйте /api для подробной информации"
         await query.edit_message_text(text)
+        
+    elif query.data == "help":
+        text = """
+ℹ️ *Помощь*
 
-def run_flask():
-    """Запуск Flask"""
-    app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
+1. Отправьте аудиофайл боту
+2. Файл будет обработан и добавлен в API
+3. Используйте веб-плеер или API для воспроизведения
 
-async def setup_telegram():
-    """Настройка Telegram"""
-    if BOT_TOKEN == 'YOUR_BOT_TOKEN':
-        logger.warning("BOT_TOKEN not set!")
+Поддерживаемые форматы: MP3, M4A, FLAC
+Максимальный размер: 50MB
+        """
+        await query.edit_message_text(text, parse_mode='Markdown')
+
+def run_flask_server():
+    """Запуск Flask сервера в отдельном потоке"""
+    try:
+        app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
+    except Exception as e:
+        logger.error(f"Flask server error: {e}")
+
+async def setup_telegram_bot():
+    """Настройка и создание Telegram бота"""
+    if not BOT_TOKEN:
+        logger.warning("BOT_TOKEN not configured - running in API-only mode")
         return None
     
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("list", list_command))
-    application.add_handler(CommandHandler("api", api_command))
-    application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    return application
+    try:
+        # Создаем приложение
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Добавляем обработчики команд
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("upload", start_command))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CommandHandler("list", list_command))
+        application.add_handler(CommandHandler("api", api_command))
+        
+        # Обработчик аудиофайлов
+        application.add_handler(MessageHandler(filters.AUDIO, handle_audio_upload))
+        
+        # Обработчик кнопок
+        application.add_handler(CallbackQueryHandler(button_handler))
+        
+        return application
+        
+    except Exception as e:
+        logger.error(f"Failed to setup Telegram bot: {e}")
+        return None
 
 async def main():
-    """Главная функция"""
+    """Главная асинхронная функция"""
     global telegram_app
     
-    logger.info("🚀 Starting Music Bot + API")
+    logger.info("🚀 Starting Telegram Music Bot + API Server")
     
-    # Flask в отдельном потоке
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    # Запускаем Flask сервер в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
     flask_thread.start()
-    logger.info(f"🌐 API Server on port {PORT}")
+    logger.info(f"🌐 Flask API server started on port {PORT}")
     
-    # Telegram бот
-    telegram_app = await setup_telegram()
+    # Настраиваем Telegram бота
+    telegram_app = await setup_telegram_bot()
     
     if telegram_app and WEBHOOK_URL:
-        logger.info("🤖 Webhook mode")
-        await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
-        while True:
-            await asyncio.sleep(60)
+        # Webhook режим для продакшена
+        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        await telegram_app.bot.set_webhook(url=webhook_url)
+        logger.info(f"🤖 Telegram bot webhook set to: {webhook_url}")
+        
+        # Держим приложение запущенным
+        try:
+            while True:
+                await asyncio.sleep(60)  # Проверяем каждую минуту
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
+            
     elif telegram_app:
-        logger.info("🤖 Polling mode")
-        await telegram_app.run_polling()
+        # Polling режим для разработки
+        logger.info("🤖 Starting Telegram bot in polling mode")
+        await telegram_app.run_polling(drop_pending_updates=True)
+        
     else:
-        logger.info("🤖 API only mode")
-        while True:
-            await asyncio.sleep(60)
+        # Только API режим
+        logger.info("🤖 Running in API-only mode (no Telegram bot)")
+        try:
+            while True:
+                await asyncio.sleep(60)
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application stopped by user")
+    except Exception as e:
+        logger.error(f"Application error: {e}")
